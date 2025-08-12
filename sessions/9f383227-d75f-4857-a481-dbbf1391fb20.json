@@ -1,0 +1,17 @@
+{
+    "name": null,
+    "history": [
+        {
+            "role": "user",
+            "parts": [
+                "hello !"
+            ]
+        },
+        {
+            "role": "model",
+            "parts": [
+                "Hello there! How can I help you today? \ud83d\ude0a"
+            ]
+        }
+    ]
+}
