@@ -8,12 +8,10 @@ from vertexai.preview.generative_models import GenerativeModel, Part, Content, C
 import google.oauth2.credentials
 import google.auth.transport.requests
 from google_auth_oauthlib.flow import Flow
-
 from google.oauth2 import id_token
 
 # Configure Flask app
-app = Flask(__name__, template_folder='templates') # Specify templates folder
-# A secret key is required for sessions.
+app = Flask(__name__, template_folder='templates')
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "your_secret_key_here")
 CORS(app, supports_credentials=True)
 
@@ -27,6 +25,9 @@ flow = Flow.from_client_secrets_file(
     redirect_uri='http://127.0.0.1:5000/oauth2callback'
 )
 
+# Insecure transport for local testing
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+
 # Configure Vertex AI
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT")
 LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION")
@@ -34,20 +35,37 @@ LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION")
 if not PROJECT_ID or not LOCATION:
     print("WARNING: GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION environment variables not set.")
 
-# Define the directory for storing session files and settings
-SESSIONS_DIR = "sessions"
-SETTINGS_FILE = "settings.json"
-os.makedirs(SESSIONS_DIR, exist_ok=True)
+# Define the root directory for all user data
+USERS_DATA_DIR = "users_data"
+GLOBAL_DATA_DIR = "global_data"
+os.makedirs(USERS_DATA_DIR, exist_ok=True)
+os.makedirs(GLOBAL_DATA_DIR, exist_ok=True)
 
+# Define the path for the global settings file
+GLOBAL_SETTINGS_FILE = os.path.join(GLOBAL_DATA_DIR, "settings.json")
+
+
+def get_user_data_dir() -> str:
+    """Returns the user-specific directory path based on the logged-in user's email."""
+    if 'email' not in session:
+        return None
+    
+    user_email_hash = str(hash(session['email']))
+    user_dir = os.path.join(USERS_DATA_DIR, user_email_hash)
+    os.makedirs(user_dir, exist_ok=True)
+    return user_dir
 
 def get_session_file_path(session_id: str) -> str:
-    """Returns the file path for a given session ID."""
-    return os.path.join(SESSIONS_DIR, f"{session_id}.json")
+    """Returns the file path for a given session ID within the user's directory."""
+    user_dir = get_user_data_dir()
+    if not user_dir:
+        return None
+    return os.path.join(user_dir, f"{session_id}.json")
 
 def load_session_data(session_id: str) -> dict:
     """Loads session data (name and history) from a JSON file."""
     file_path = get_session_file_path(session_id)
-    if os.path.exists(file_path):
+    if file_path and os.path.exists(file_path):
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
@@ -63,6 +81,8 @@ def load_session_data(session_id: str) -> dict:
 def save_session_data(session_id: str, name: str, history: list[Content]):
     """Saves session data (name and history) to a JSON file."""
     file_path = get_session_file_path(session_id)
+    if not file_path:
+        return
     
     serializable_history = []
     for content_item in history:
@@ -77,16 +97,16 @@ def save_session_data(session_id: str, name: str, history: list[Content]):
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(session_data, f, indent=4)
 
-def load_settings() -> dict:
-    """Loads settings from a JSON file."""
-    if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+def load_global_settings() -> dict:
+    """Loads global settings from a JSON file."""
+    if os.path.exists(GLOBAL_SETTINGS_FILE):
+        with open(GLOBAL_SETTINGS_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     return {'system_instructions': ''}
 
-def save_settings(settings_data: dict):
-    """Saves settings to a JSON file."""
-    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+def save_global_settings(settings_data: dict):
+    """Saves global settings to a JSON file."""
+    with open(GLOBAL_SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(settings_data, f, indent=4)
 
 # New routes for Google OAuth
@@ -99,32 +119,21 @@ def login():
 @app.route('/oauth2callback')
 def oauth2callback():
     try:
-        # State is a security measure to prevent CSRF attacks.
         state = session['state']
-
-        # Fetch the token using the authorization response from Google.
         flow.fetch_token(authorization_response=request.url)
         credentials = flow.credentials
-
-        # Use id_token.verify_oauth2_token to decode and validate the token
-        # It takes the ID token string, the request object, and the client ID.
         id_info = id_token.verify_oauth2_token(
             credentials.id_token,
             google.auth.transport.requests.Request(),
             flow.client_config['client_id']
         )
-
         user_email = id_info.get('email')
         user_name = id_info.get('name')
-
         session['google_id'] = id_info.get('sub')
         session['name'] = user_name
         session['email'] = user_email
-
         return redirect(url_for('serve_index'))
-
     except Exception as e:
-        # Handle any errors during the token exchange or verification process.
         print(f"Error during OAuth callback: {e}")
         return redirect(url_for('serve_index'))
 
@@ -151,7 +160,6 @@ def serve_index():
 
 @app.route('/chat-vertex', methods=['POST'])
 def chat_with_vertex():
-    # Enforce login for this endpoint
     if 'email' not in session:
         return jsonify({'error': 'Unauthorized. Please log in.'}), 401
 
@@ -164,7 +172,8 @@ def chat_with_vertex():
         if not session_id or not user_message:
             return jsonify({'error': 'Missing sessionId or message'}), 400
 
-        settings = load_settings()
+        # Load global system instructions
+        settings = load_global_settings()
         system_instructions = settings.get('system_instructions', '')
 
         session_data = load_session_data(session_id)
@@ -194,8 +203,12 @@ def list_sessions():
     if 'email' not in session:
         return jsonify({'error': 'Unauthorized. Please log in.'}), 401
     try:
+        user_dir = get_user_data_dir()
+        if not user_dir or not os.path.exists(user_dir):
+            return jsonify([])
+
         session_data_list = []
-        for f in os.listdir(SESSIONS_DIR):
+        for f in os.listdir(user_dir):
             if f.endswith('.json'):
                 session_id = os.path.splitext(f)[0]
                 session_info = load_session_data(session_id)
@@ -215,6 +228,8 @@ def get_session_history(session_id):
         return jsonify({'error': 'Unauthorized. Please log in.'}), 401
     try:
         session_data = load_session_data(session_id)
+        if not session_data:
+            return jsonify({'error': 'Session not found'}), 404
         history = session_data['history']
         
         serializable_history = []
@@ -255,7 +270,7 @@ def delete_session(session_id):
         return jsonify({'error': 'Unauthorized. Please log in.'}), 401
     try:
         file_path = get_session_file_path(session_id)
-        if os.path.exists(file_path):
+        if file_path and os.path.exists(file_path):
             os.remove(file_path)
             return jsonify({'message': 'Session deleted successfully'})
         else:
@@ -269,7 +284,7 @@ def get_settings():
     if 'email' not in session:
         return jsonify({'error': 'Unauthorized. Please log in.'}), 401
     try:
-        settings = load_settings()
+        settings = load_global_settings()
         return jsonify(settings)
     except Exception as e:
         print(f"Error retrieving settings: {e}")
@@ -282,16 +297,13 @@ def update_settings():
     try:
         data = request.get_json()
         new_instructions = data.get('system_instructions', '')
-        settings = load_settings()
+        settings = load_global_settings()
         settings['system_instructions'] = new_instructions
-        save_settings(settings)
+        save_global_settings(settings)
         return jsonify({'message': 'Settings updated successfully'})
     except Exception as e:
         print(f"Error updating settings: {e}")
         return jsonify({'error': 'Could not update settings'}), 500
-
-import os
-os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 if __name__ == '__main__':
     app.run(debug=True, host='127.0.0.1', port=5000)
