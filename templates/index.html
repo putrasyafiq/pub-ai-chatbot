@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Chatbot Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 h-screen flex flex-col">
+    <div class="flex flex-1 flex-col lg:flex-row p-4 space-y-4 lg:space-y-0 lg:space-x-4 h-full">
+
+        <aside class="w-full lg:w-1/4 bg-gray-800 p-6 rounded-lg shadow-xl flex flex-col space-y-6">
+            <div class="pb-4 border-b border-gray-700">
+                <h1 class="text-2xl font-bold mb-1">AI Chatbot Generator</h1>
+                <div class="text-sm flex items-center justify-between">
+                    <span class="text-gray-400">putrasyafiq@google.com</span>
+                    <a href="#" class="text-blue-400 hover:text-blue-300 transition duration-200">Log Out</a>
+                </div>
+            </div>
+
+            <div class="flex flex-col flex-1">
+                <h2 class="text-xl font-semibold mb-3">System Instructions</h2>
+                <textarea
+                    id="system-instructions"
+                    class="w-full h-40 p-3 bg-gray-700 text-gray-200 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-400 resize-none"
+                    placeholder="input for system instructions"
+                ></textarea>
+            </div>
+
+            <div>
+                <h2 class="text-xl font-semibold mb-3">Settings</h2>
+                <div class="space-y-3">
+                    <button class="w-full py-3 px-4 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg transition duration-200 text-left font-medium">Sharing</button>
+                    <button class="w-full py-3 px-4 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg transition duration-200 text-left font-medium">Sources</button>
+                    <button class="w-full py-3 px-4 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg transition duration-200 text-left font-medium">Logs</button>
+                </div>
+            </div>
+        </aside>
+
+        <main class="flex-1 bg-gray-800 p-6 rounded-lg shadow-xl flex flex-col">
+            <div id="chat-output" class="flex-1 overflow-y-auto space-y-4 p-4 rounded-lg bg-gray-900">
+            </div>
+
+            <div class="mt-6 flex items-center space-x-3">
+                <input
+                    type="text"
+                    id="chat-input"
+                    class="flex-1 p-3 bg-gray-700 text-gray-200 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-400"
+                    placeholder="input for chatbot"
+                />
+                <button id="send-button" class="p-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition duration-200 flex items-center justify-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                </button>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const chatInput = document.getElementById('chat-input');
+        const sendButton = document.getElementById('send-button');
+        const chatOutput = document.getElementById('chat-output');
+        const systemInstructions = document.getElementById('system-instructions');
+
+        // Function to generate a UUID (Universally Unique Identifier)
+        function generateUUID() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                var r = Math.random() * 16 | 0,
+                    v = c == 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
+
+        let currentSessionId = sessionStorage.getItem('chatSessionId');
+        if (!currentSessionId) {
+            currentSessionId = generateUUID();
+            sessionStorage.setItem('chatSessionId', currentSessionId);
+            console.log('New session ID generated:', currentSessionId);
+        } else {
+            console.log('Existing session ID loaded:', currentSessionId);
+        }
+
+        const sendMessage = async () => {
+            const userMessage = chatInput.value.trim();
+            if (userMessage === '') return;
+
+            appendMessage('user', userMessage);
+            chatInput.value = '';
+
+            const loadingIndicator = appendMessage('bot', '...', true);
+
+            try {
+                const response = await fetch('http://127.0.0.1:5000/chat-vertex', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        sessionId: currentSessionId, // Send the session ID
+                        message: userMessage,
+                        instructions: systemInstructions.value,
+                    }),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                loadingIndicator.textContent = data.response;
+                chatOutput.scrollTop = chatOutput.scrollHeight;
+
+            } catch (error) {
+                console.error('Error:', error);
+                loadingIndicator.textContent = 'Sorry, an error occurred. Please try again.';
+                loadingIndicator.classList.add('text-red-400');
+            }
+        };
+
+        const appendMessage = (sender, text, isLoading = false) => {
+            const messageWrapper = document.createElement('div');
+            messageWrapper.classList.add('flex', 'space-x-3', 'p-4', 'rounded-lg');
+
+            const messageBubble = document.createElement('div');
+            messageBubble.classList.add('p-3', 'rounded-lg', 'max-w-2/3', 'break-words');
+
+            if (sender === 'user') {
+                messageWrapper.classList.add('justify-end');
+                messageBubble.classList.add('bg-blue-600', 'text-white');
+            } else {
+                messageWrapper.classList.add('justify-start');
+                messageBubble.classList.add('bg-gray-700', 'text-gray-200');
+            }
+
+            messageBubble.textContent = text;
+            messageWrapper.appendChild(messageBubble);
+
+            chatOutput.appendChild(messageWrapper);
+            if (!isLoading) {
+                 chatOutput.scrollTop = chatOutput.scrollHeight;
+            }
+
+            return messageBubble;
+        };
+
+        sendButton.addEventListener('click', sendMessage);
+        chatInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html>
