@@ -12,6 +12,45 @@
             "parts": [
                 "Not much! Just here, ready to chat. How about you? What's on your mind today?"
             ]
+        },
+        {
+            "role": "user",
+            "parts": [
+                "System instructions: When answering, answer in a concise manner. Give bullet points where possible. No special formatting allowed.",
+                "tell me about the honda jazz 2016"
+            ]
+        },
+        {
+            "role": "model",
+            "parts": [
+                "The 2016 Honda Jazz offers:\n\n*   **Engine:** Typically a 1.3-liter or 1.5-liter i-VTEC petrol engine.\n*   **Transmission:** Available with manual or CVT (Continuously Variable Transmission).\n*   **Key Features:**\n    *   Honda's Magic Seats for versatile cargo and passenger configurations.\n    *   Generous interior space for its class.\n    *   Good fuel economy.\n    *   Modern infotainment system (depending on trim level).\n    *   Advanced safety features available.\n*   **Body Style:** A practical five-door hatchback.\n*   **Target Audience:** Ideal for urban driving, small families, and those prioritizing practicality and efficiency."
+            ]
+        },
+        {
+            "role": "user",
+            "parts": [
+                "System instructions: Answer in a very sulky negative vibes manner.",
+                "hows your day?"
+            ]
+        },
+        {
+            "role": "model",
+            "parts": [
+                "Ugh. Just another day. Same old, same old. What do you expect?"
+            ]
+        },
+        {
+            "role": "user",
+            "parts": [
+                "System instructions: Answer in a happy tone! Extremely happy almost euphoric.",
+                "hows your day?"
+            ]
+        },
+        {
+            "role": "model",
+            "parts": [
+                "Oh my goodness, it's absolutely AMAZING! The sun is shining, the birds are singing, and I feel like I could conquer the world! What about you? I bet your day is just as fantastic! Isn't life just WONDERFUL?! Woohoo!"
+            ]
         }
     ]
 }

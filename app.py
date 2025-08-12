@@ -1,23 +1,44 @@
 import os
 import json
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file, redirect, url_for, session
 from flask_cors import CORS
 from vertexai.preview.generative_models import GenerativeModel, Part, Content, ChatSession
 
+# Google OAuth imports
+import google.oauth2.credentials
+import google.auth.transport.requests
+from google_auth_oauthlib.flow import Flow
+
+from google.oauth2 import id_token
+
 # Configure Flask app
-app = Flask(__name__)
-CORS(app)  # Enable Cross-Origin Resource Sharing
+app = Flask(__name__, template_folder='templates') # Specify templates folder
+# A secret key is required for sessions.
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "your_secret_key_here")
+CORS(app, supports_credentials=True)
+
+# Google OAuth 2.0 configuration
+CLIENT_SECRETS_FILE = "keys.json"
+SCOPES = ["https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile", "openid"]
+
+# Set up the OAuth flow
+flow = Flow.from_client_secrets_file(
+    CLIENT_SECRETS_FILE, scopes=SCOPES,
+    redirect_uri='http://127.0.0.1:5000/oauth2callback'
+)
 
 # Configure Vertex AI
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT")
 LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION")
 
 if not PROJECT_ID or not LOCATION:
-    raise ValueError("Please set GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION environment variables.")
+    print("WARNING: GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION environment variables not set.")
 
-# Define the directory for storing session files
+# Define the directory for storing session files and settings
 SESSIONS_DIR = "sessions"
-os.makedirs(SESSIONS_DIR, exist_ok=True) # Create the directory if it doesn't exist
+SETTINGS_FILE = "settings.json"
+os.makedirs(SESSIONS_DIR, exist_ok=True)
+
 
 def get_session_file_path(session_id: str) -> str:
     """Returns the file path for a given session ID."""
@@ -30,7 +51,6 @@ def load_session_data(session_id: str) -> dict:
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        # Reconstruct Content objects for history from the loaded raw data
         history = []
         if 'history' in data and data['history']:
             for item in data['history']:
@@ -38,13 +58,12 @@ def load_session_data(session_id: str) -> dict:
                 history.append(Content(role=item['role'], parts=parts))
         
         return {'name': data.get('name'), 'history': history}
-    return {'name': None, 'history': []} # Return empty if file not found
+    return {'name': None, 'history': []}
 
 def save_session_data(session_id: str, name: str, history: list[Content]):
     """Saves session data (name and history) to a JSON file."""
     file_path = get_session_file_path(session_id)
     
-    # Convert Content objects to a serializable format
     serializable_history = []
     for content_item in history:
         serializable_parts = [p.text for p in content_item.parts if hasattr(p, 'text')]
@@ -58,43 +77,110 @@ def save_session_data(session_id: str, name: str, history: list[Content]):
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(session_data, f, indent=4)
 
+def load_settings() -> dict:
+    """Loads settings from a JSON file."""
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {'system_instructions': ''}
+
+def save_settings(settings_data: dict):
+    """Saves settings to a JSON file."""
+    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(settings_data, f, indent=4)
+
+# New routes for Google OAuth
+@app.route('/login')
+def login():
+    authorization_url, state = flow.authorization_url()
+    session['state'] = state
+    return redirect(authorization_url)
+
+@app.route('/oauth2callback')
+def oauth2callback():
+    try:
+        # State is a security measure to prevent CSRF attacks.
+        state = session['state']
+
+        # Fetch the token using the authorization response from Google.
+        flow.fetch_token(authorization_response=request.url)
+        credentials = flow.credentials
+
+        # Use id_token.verify_oauth2_token to decode and validate the token
+        # It takes the ID token string, the request object, and the client ID.
+        id_info = id_token.verify_oauth2_token(
+            credentials.id_token,
+            google.auth.transport.requests.Request(),
+            flow.client_config['client_id']
+        )
+
+        user_email = id_info.get('email')
+        user_name = id_info.get('name')
+
+        session['google_id'] = id_info.get('sub')
+        session['name'] = user_name
+        session['email'] = user_email
+
+        return redirect(url_for('serve_index'))
+
+    except Exception as e:
+        # Handle any errors during the token exchange or verification process.
+        print(f"Error during OAuth callback: {e}")
+        return redirect(url_for('serve_index'))
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('serve_index'))
+
+# Route to get current user info
+@app.route('/user_info', methods=['GET'])
+def get_user_info():
+    if 'email' in session:
+        return jsonify({
+            'email': session['email'],
+            'name': session['name'],
+            'logged_in': True
+        })
+    return jsonify({'logged_in': False})
+
+@app.route('/')
+def serve_index():
+    """Serves the index.html file from the templates directory."""
+    return send_file('templates/index.html')
+
 @app.route('/chat-vertex', methods=['POST'])
 def chat_with_vertex():
-    """Handles chat requests and interacts with the Vertex AI model."""
+    # Enforce login for this endpoint
+    if 'email' not in session:
+        return jsonify({'error': 'Unauthorized. Please log in.'}), 401
+
     try:
         data = request.get_json()
         session_id = data.get('sessionId')
         user_message = data.get('message')
-        system_instructions = data.get('instructions', '')
-        session_name = data.get('sessionName') # Get session name from frontend
+        session_name = data.get('sessionName')
 
         if not session_id or not user_message:
             return jsonify({'error': 'Missing sessionId or message'}), 400
 
-        # Load existing session data
+        settings = load_settings()
+        system_instructions = settings.get('system_instructions', '')
+
         session_data = load_session_data(session_id)
         history = session_data['history']
-        # If a name is passed from the frontend (e.g., initial message for a new session), update it
-        # Otherwise, keep the existing name from the loaded session_data
         current_session_name = session_name if session_name is not None else session_data['name']
 
-        # Initialize the model and start a chat session with the loaded history
         model = GenerativeModel("gemini-2.5-flash-lite")
         chat_session = model.start_chat(history=history)
 
-        # Prepare the current user's message including system instructions if provided
         user_content_parts = []
         if system_instructions:
             user_content_parts.append(Part.from_text(f"System instructions: {system_instructions}"))
         user_content_parts.append(Part.from_text(user_message))
 
-        # Send message to the Vertex AI model
         response_from_model = chat_session.send_message(user_content_parts)
-
-        # Extract the text content from the response
         vertex_response_text = response_from_model.text
-
-        # Save the *entire* updated history (and current name) back to the session file.
         save_session_data(session_id, current_session_name, chat_session.history)
 
         return jsonify({'response': vertex_response_text})
@@ -103,10 +189,10 @@ def chat_with_vertex():
         print(f"An error occurred: {e}")
         return jsonify({'error': f'An internal server error occurred: {e}'}), 500
 
-
 @app.route('/sessions', methods=['GET'])
 def list_sessions():
-    """Lists all available session IDs and names."""
+    if 'email' not in session:
+        return jsonify({'error': 'Unauthorized. Please log in.'}), 401
     try:
         session_data_list = []
         for f in os.listdir(SESSIONS_DIR):
@@ -117,7 +203,6 @@ def list_sessions():
                     'id': session_id,
                     'name': session_info['name']
                 })
-        # Sort by name if available, otherwise by ID
         session_data_list.sort(key=lambda x: x['name'] if x['name'] else x['id'])
         return jsonify(session_data_list)
     except Exception as e:
@@ -126,12 +211,12 @@ def list_sessions():
 
 @app.route('/sessions/<session_id>', methods=['GET'])
 def get_session_history(session_id):
-    """Retrieves the history for a specific session ID."""
+    if 'email' not in session:
+        return jsonify({'error': 'Unauthorized. Please log in.'}), 401
     try:
         session_data = load_session_data(session_id)
         history = session_data['history']
         
-        # Convert Content objects back to a simple serializable format for the frontend
         serializable_history = []
         for item in history:
             combined_parts_text = " ".join([p.text for p in item.parts if hasattr(p, 'text')])
@@ -146,7 +231,8 @@ def get_session_history(session_id):
 
 @app.route('/sessions/rename/<session_id>', methods=['POST'])
 def rename_session(session_id):
-    """Renames a specific session."""
+    if 'email' not in session:
+        return jsonify({'error': 'Unauthorized. Please log in.'}), 401
     try:
         data = request.get_json()
         new_name = data.get('newName')
@@ -165,7 +251,8 @@ def rename_session(session_id):
 
 @app.route('/sessions/delete/<session_id>', methods=['DELETE'])
 def delete_session(session_id):
-    """Deletes a specific session."""
+    if 'email' not in session:
+        return jsonify({'error': 'Unauthorized. Please log in.'}), 401
     try:
         file_path = get_session_file_path(session_id)
         if os.path.exists(file_path):
@@ -176,6 +263,35 @@ def delete_session(session_id):
     except Exception as e:
         print(f"Error deleting session {session_id}: {e}")
         return jsonify({'error': 'Could not delete session'}), 500
+
+@app.route('/settings', methods=['GET'])
+def get_settings():
+    if 'email' not in session:
+        return jsonify({'error': 'Unauthorized. Please log in.'}), 401
+    try:
+        settings = load_settings()
+        return jsonify(settings)
+    except Exception as e:
+        print(f"Error retrieving settings: {e}")
+        return jsonify({'error': 'Could not retrieve settings'}), 500
+
+@app.route('/settings', methods=['POST'])
+def update_settings():
+    if 'email' not in session:
+        return jsonify({'error': 'Unauthorized. Please log in.'}), 401
+    try:
+        data = request.get_json()
+        new_instructions = data.get('system_instructions', '')
+        settings = load_settings()
+        settings['system_instructions'] = new_instructions
+        save_settings(settings)
+        return jsonify({'message': 'Settings updated successfully'})
+    except Exception as e:
+        print(f"Error updating settings: {e}")
+        return jsonify({'error': 'Could not update settings'}), 500
+
+import os
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 if __name__ == '__main__':
     app.run(debug=True, host='127.0.0.1', port=5000)
