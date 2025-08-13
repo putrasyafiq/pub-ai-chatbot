@@ -4,6 +4,7 @@ import shutil
 from flask import Flask, request, jsonify, send_file, redirect, url_for, session
 from flask_cors import CORS
 from vertexai.preview.generative_models import GenerativeModel, Part, Content, ChatSession
+from datetime import datetime
 
 # Google OAuth imports
 import google.oauth2.credentials
@@ -42,6 +43,10 @@ os.makedirs(USERS_DATA_DIR, exist_ok=True)
 
 # --- Helper Functions for File System Management ---
 
+def get_current_month_year() -> str:
+    """Returns the current month and year in 'YYYY-MM' format."""
+    return datetime.now().strftime("%Y-%m")
+
 def get_user_data_dir() -> str | None:
     """Returns the user-specific directory path based on the logged-in user's email."""
     if 'email' not in session:
@@ -51,6 +56,15 @@ def get_user_data_dir() -> str | None:
     user_dir = os.path.join(USERS_DATA_DIR, user_email_hash)
     os.makedirs(user_dir, exist_ok=True)
     return user_dir
+
+def get_user_info_path() -> str | None:
+    """Returns the file path for the user's info file."""
+    if 'email' not in session:
+        return None
+    users_info_dir = os.path.join(USERS_DATA_DIR, "users_info")
+    os.makedirs(users_info_dir, exist_ok=True)
+    user_info_file = os.path.join(users_info_dir, f"{str(hash(session['email']))}.json")
+    return user_info_file
 
 def get_bots_dir() -> str | None:
     """Returns the bots directory for the logged-in user."""
@@ -94,6 +108,33 @@ def get_session_file_path(bot_id: str, session_id: str) -> str | None:
 
 # --- Bot and Session Data Loading/Saving Functions ---
 
+def count_tokens(text: str) -> int:
+    """A simple token-counting heuristic (approx. 4 characters per token)."""
+    return int(len(text) / 4)
+
+def load_user_info() -> dict:
+    """Loads user info (email, user_id, bot/session counts, token usage) from a JSON file."""
+    file_path = get_user_info_path()
+    if file_path and os.path.exists(file_path):
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {
+        'email': session.get('email'),
+        'user_id': session.get('google_id'),
+        'bots_created': 0,
+        'sessions_generated': 0,
+        'total_tokens_used': 0,
+        'monthly_tokens': {}
+    }
+
+def save_user_info(info_data: dict):
+    """Saves a user's info to a JSON file."""
+    file_path = get_user_info_path()
+    if not file_path:
+        return
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(info_data, f, indent=4)
+
 def load_bot_info(bot_id: str) -> dict | None:
     """Loads a bot's info (name, instructions, permissions) from a JSON file."""
     file_path = get_bot_info_path(bot_id)
@@ -113,7 +154,7 @@ def save_bot_info(bot_id: str, info_data: dict):
         json.dump(info_data, f, indent=4)
 
 def load_session_data(bot_id: str, session_id: str) -> dict:
-    """Loads session data (name and history) from a JSON file."""
+    """Loads session data (name, history, timestamps, tokens) from a JSON file."""
     file_path = get_session_file_path(bot_id, session_id)
     if file_path and os.path.exists(file_path):
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -122,13 +163,20 @@ def load_session_data(bot_id: str, session_id: str) -> dict:
         history = []
         if 'history' in data and data['history']:
             for item in data['history']:
-                parts = [Part.from_text(p) for p in item['parts']]
+                parts = [Part.from_text(p['text']) for p in item['parts']]
                 history.append(Content(role=item['role'], parts=parts))
         
-        return {'name': data.get('name'), 'history': history}
-    return {'name': None, 'history': []}
+        return {
+            'name': data.get('name'),
+            'history': history,
+            'start_time': data.get('start_time'),
+            'last_message_time': data.get('last_message_time'),
+            'total_tokens': data.get('total_tokens', 0),
+            'user_email': data.get('user_email', 'Public')
+        }
+    return {'name': None, 'history': [], 'start_time': None, 'last_message_time': None, 'total_tokens': 0, 'user_email': 'Public'}
 
-def save_session_data(bot_id: str, session_id: str, name: str, history: list[Content]):
+def save_session_data(bot_id: str, session_id: str, name: str, history: list[Content], user_email: str, start_time: str | None = None, last_message_time: str | None = None, total_tokens: int = 0):
     """Saves session data (name and history) to a JSON file."""
     file_path = get_session_file_path(bot_id, session_id)
     if not file_path:
@@ -136,12 +184,19 @@ def save_session_data(bot_id: str, session_id: str, name: str, history: list[Con
     
     serializable_history = []
     for content_item in history:
-        serializable_parts = [p.text for p in content_item.parts if hasattr(p, 'text')]
+        serializable_parts = []
+        for p in content_item.parts:
+            if hasattr(p, 'text'):
+                serializable_parts.append({'text': p.text, 'tokens': count_tokens(p.text)})
         serializable_history.append({'role': content_item.role, 'parts': serializable_parts})
     
     session_data = {
         'name': name,
-        'history': serializable_history
+        'history': serializable_history,
+        'start_time': start_time,
+        'last_message_time': last_message_time,
+        'total_tokens': total_tokens,
+        'user_email': user_email
     }
 
     session_dir = get_session_dir(bot_id)
@@ -259,8 +314,7 @@ def chat_with_vertex():
         bot_id = data.get('botId')
         session_id = data.get('sessionId')
         user_message = data.get('message')
-        session_name = data.get('sessionName')
-
+        
         if not bot_id or not session_id or not user_message:
             return jsonify({'error': 'Missing botId, sessionId, or message'}), 400
 
@@ -274,7 +328,9 @@ def chat_with_vertex():
 
         session_data = load_session_data(bot_id, session_id)
         history = session_data['history']
-        current_session_name = session_name if session_name is not None else session_data['name']
+        start_time = session_data.get('start_time', datetime.now().isoformat())
+        user_email = session_data.get('user_email', session.get('email', 'Public'))
+        total_tokens = session_data.get('total_tokens', 0)
 
         model = GenerativeModel("gemini-2.5-flash-lite")
         chat_session = model.start_chat(history=history)
@@ -286,7 +342,31 @@ def chat_with_vertex():
 
         response_from_model = chat_session.send_message(user_content_parts)
         vertex_response_text = response_from_model.text
-        save_session_data(bot_id, session_id, current_session_name, chat_session.history)
+
+        # Calculate tokens for the new messages
+        user_tokens = count_tokens(user_message)
+        bot_tokens = count_tokens(vertex_response_text)
+        new_tokens = user_tokens + bot_tokens
+        total_tokens += new_tokens
+
+        # Update user's total token count and monthly tokens
+        if 'email' in session:
+            user_info = load_user_info()
+            user_info['total_tokens_used'] += new_tokens
+            
+            month_year = get_current_month_year()
+            if 'monthly_tokens' not in user_info:
+                user_info['monthly_tokens'] = {}
+            user_info['monthly_tokens'][month_year] = user_info['monthly_tokens'].get(month_year, 0) + new_tokens
+            
+            save_user_info(user_info)
+        
+        last_message_time = datetime.now().isoformat()
+        
+        # Dynamically create session name
+        session_name = f"{last_message_time} by {user_email}"
+
+        save_session_data(bot_id, session_id, session_name, chat_session.history, user_email, start_time, last_message_time, total_tokens)
 
         return jsonify({'response': vertex_response_text})
 
@@ -309,10 +389,14 @@ def list_bots():
         for bot_id in os.listdir(bots_dir):
             bot_info = load_bot_info(bot_id)
             if bot_info:
+                sessions_dir = get_session_dir(bot_id)
+                session_count = len([f for f in os.listdir(sessions_dir) if f.endswith('.json')]) if os.path.exists(sessions_dir) else 0
+
                 bot_list.append({
                     'id': bot_id,
                     'name': bot_info.get('name', 'Untitled Bot'),
-                    'permissions': bot_info.get('permissions', 'restricted')
+                    'permissions': bot_info.get('permissions', 'restricted'),
+                    'session_count': session_count
                 })
         bot_list.sort(key=lambda x: x['name'])
         return jsonify(bot_list)
@@ -338,6 +422,12 @@ def create_bot():
             'allowed_domains': []
         }
         save_bot_info(bot_id, new_bot_info)
+
+        # Update user info
+        user_info = load_user_info()
+        user_info['bots_created'] += 1
+        save_user_info(user_info)
+
         return jsonify({'message': 'Bot created successfully', 'botId': bot_id})
     except Exception as e:
         print(f"Error creating bot: {e}")
@@ -398,16 +488,33 @@ def get_bot(bot_id):
 
         sessions_dir = get_session_dir(bot_id)
         session_list = []
+        total_bot_tokens = 0
+        monthly_bot_tokens = {}
+
         if os.path.exists(sessions_dir):
+            all_sessions = []
             for f in os.listdir(sessions_dir):
                 if f.endswith('.json'):
                     session_id = os.path.splitext(f)[0]
-                    session_info = load_session_data(bot_id, session_id)
-                    session_list.append({
-                        'id': session_id,
-                        'name': session_info.get('name', 'Untitled Session')
-                    })
-        session_list.sort(key=lambda x: x['name'])
+                    session_data = load_session_data(bot_id, session_id)
+                    all_sessions.append(session_data)
+
+            # Sort sessions by last_message_time in descending order
+            all_sessions.sort(key=lambda x: x.get('last_message_time', ''), reverse=True)
+
+            for session_data in all_sessions:
+                total_tokens = session_data.get('total_tokens', 0)
+                last_message_time = session_data.get('last_message_time')
+                
+                total_bot_tokens += total_tokens
+                if last_message_time:
+                    month_year = datetime.fromisoformat(last_message_time).strftime("%Y-%m")
+                    monthly_bot_tokens[month_year] = monthly_bot_tokens.get(month_year, 0) + total_tokens
+                
+                session_list.append({
+                    'id': session_id,
+                    'name': session_data.get('name', 'Untitled Session')
+                })
         
         # Only return sensitive data like owner_email to the owner
         is_owner = 'email' in session and bot_info['owner_email'] == session['email']
@@ -419,7 +526,9 @@ def get_bot(bot_id):
         return jsonify({
             'bot': bot_info,
             'sessions': session_list,
-            'is_owner': is_owner
+            'is_owner': is_owner,
+            'total_tokens_used': total_bot_tokens,
+            'monthly_tokens_used': monthly_bot_tokens
         })
     except FileNotFoundError:
         return jsonify({'error': 'Bot not found'}), 404
@@ -452,24 +561,31 @@ def update_bot_permissions(bot_id):
 
 @app.route('/bots/<bot_id>/sessions/new', methods=['POST'])
 def create_session(bot_id):
+    user_email = session.get('email', 'Public')
     is_owner = 'email' in session and load_bot_info(bot_id) and load_bot_info(bot_id).get('owner_email') == session.get('email')
 
-    if not is_owner:
+    if not is_owner and user_email == 'Public':
         bot_info = load_bot_info(bot_id)
         if not bot_info:
             return jsonify({'error': 'Bot not found'}), 404
         if bot_info['permissions'] == 'restricted':
             return jsonify({'error': 'Restricted bot. Sessions cannot be created anonymously.'}), 403
         if bot_info['permissions'] == 'domain':
-            if not session.get('email'):
-                return jsonify({'error': 'Login required for this bot.'}), 401
-            user_domain = session['email'].split('@')[-1]
-            if user_domain not in bot_info.get('allowed_domains', []):
-                return jsonify({'error': 'Domain not allowed for this bot.'}), 403
+            return jsonify({'error': 'Login required for this bot.'}), 401
 
     try:
         session_id = os.urandom(8).hex()
-        save_session_data(bot_id, session_id, "New Session", [])
+        start_time = datetime.now().isoformat()
+        
+        session_name = f"{start_time} by {user_email}"
+        save_session_data(bot_id, session_id, session_name, [], user_email, start_time=start_time, total_tokens=0)
+        
+        # Update user info
+        if 'email' in session:
+            user_info = load_user_info()
+            user_info['sessions_generated'] += 1
+            save_user_info(user_info)
+
         return jsonify({'message': 'Session created successfully', 'sessionId': session_id})
     except Exception as e:
         print(f"Error creating session for bot {bot_id}: {e}")
@@ -485,6 +601,7 @@ def get_session_history(bot_id, session_id):
         session_data = load_session_data(bot_id, session_id)
         if not session_data:
             return jsonify({'error': 'Session not found'}), 404
+        
         history = session_data['history']
         
         serializable_history = []
@@ -492,7 +609,13 @@ def get_session_history(bot_id, session_id):
             combined_parts_text = " ".join([p.text for p in item.parts if hasattr(p, 'text')])
             serializable_history.append({'role': item.role, 'parts': [combined_parts_text]})
         
-        return jsonify({'name': session_data['name'], 'history': serializable_history})
+        return jsonify({
+            'name': session_data['name'],
+            'history': serializable_history,
+            'start_time': session_data.get('start_time'),
+            'last_message_time': session_data.get('last_message_time'),
+            'total_tokens': session_data.get('total_tokens')
+        })
     except FileNotFoundError:
         return jsonify({'error': 'Session not found'}), 404
     except Exception as e:
@@ -518,7 +641,7 @@ def rename_session(bot_id, session_id):
         if not session_data:
             return jsonify({'error': 'Session not found'}), 404
         
-        save_session_data(bot_id, session_id, new_name, session_data['history'])
+        save_session_data(bot_id, session_id, new_name, session_data['history'], session_data['user_email'], session_data['start_time'], session_data['last_message_time'], session_data['total_tokens'])
         return jsonify({'message': 'Session renamed successfully'})
     except Exception as e:
         print(f"Error renaming session {session_id}: {e}")
