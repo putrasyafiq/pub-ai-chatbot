@@ -58,28 +58,27 @@
                 <textarea
                     id="system-instructions"
                     class="w-full h-40 p-3 bg-gray-700 text-gray-200 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-400 resize-none"
-                    placeholder="input for system instructions"
+                    placeholder="Write some default instructions for your bot. (e.g. 'Answer in short and concise sentences only.')"
                     disabled
                 ></textarea>
                 <button id="save-instructions-button" class="mt-2 py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition duration-200" disabled>Save Instructions</button>
             </div>
-
+            <div class="flex flex-col">
+                <div class="flex justify-between items-center mb-3">
+                    <h2 class="text-xl font-semibold">My Bots</h2>
+                    <button id="new-session-button" class="py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition duration-200" disabled>+ New Bot</button>
+                </div>
+                <div id="session-history-list" class="space-y-2 overflow-y-auto max-h-48 rounded-lg p-2 bg-gray-700">
+                    <p class="text-gray-400 text-sm">Please log in to view bots.</p>
+                </div>
+            </div>
             <div class="flex flex-col flex-1">
                 <div class="flex justify-between items-center mb-3">
                     <h2 class="text-xl font-semibold">Session History</h2>
-                    <button id="new-session-button" class="py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition duration-200" disabled>New Session</button>
+                    <button id="new-session-button" class="py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition duration-200" disabled>+ New Session</button>
                 </div>
                 <div id="session-history-list" class="space-y-2 overflow-y-auto max-h-48 rounded-lg p-2 bg-gray-700">
                     <p class="text-gray-400 text-sm">Please log in to view sessions.</p>
-                </div>
-            </div>
-
-            <div>
-                <h2 class="text-xl font-semibold mb-3">Settings</h2>
-                <div class="space-y-3">
-                    <button class="w-full py-3 px-4 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg transition duration-200 text-left font-medium">Sharing</button>
-                    <button class="w-full py-3 px-4 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg transition duration-200 text-left font-medium">Sources</button>
-                    <button class="w-full py-3 px-4 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg transition duration-200 text-left font-medium">Logs</button>
                 </div>
             </div>
         </aside>
@@ -96,7 +95,7 @@
                     type="text"
                     id="chat-input"
                     class="flex-1 p-3 bg-gray-700 text-gray-200 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-400"
-                    placeholder="input for chatbot"
+                    placeholder="Ask me anything..."
                     disabled
                 />
                 <button id="send-button" class="p-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition duration-200 flex items-center justify-center" disabled>
