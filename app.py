@@ -230,15 +230,10 @@ def serve_index():
 
 @app.route('/bot/<bot_id>')
 def serve_bot(bot_id):
-    is_owner = 'email' in session and load_bot_info(bot_id) and load_bot_info(bot_id).get('owner_email') == session.get('email')
-    
-    # We allow the owner to always load the page, even if permissions are broken
-    if not is_owner:
-        has_access, message = check_bot_access(bot_id)
-        if not has_access:
-            # For non-owners, redirect to index with an error message
-            session['error_message'] = message
-            return redirect(url_for('serve_index'))
+    has_access, message = check_bot_access(bot_id)
+    if not has_access:
+        session['error_message'] = message
+        return redirect(url_for('serve_index'))
     
     session['is_public_view'] = True
     return send_file('templates/index.html')
