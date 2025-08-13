@@ -267,33 +267,37 @@
 
             if (isPublicView) {
                 adminSidebar.classList.add('hidden');
+                loginButton.classList.add('hidden');
+                logoutButton.classList.add('hidden');
+                userInfoSection.classList.remove('hidden');
+                userEmailSpan.textContent = 'Public User';
             } else {
                 adminSidebar.classList.remove('hidden');
+                if (isLoggedIn) {
+                    loginButton.classList.add('hidden');
+                    userInfoSection.classList.remove('hidden');
+                    userEmailSpan.textContent = user.email;
+                    logoutButton.classList.remove('hidden');
+                    newBotButton.disabled = false;
+                    fetchBots();
+                } else {
+                    loginButton.classList.remove('hidden');
+                    userInfoSection.classList.add('hidden');
+                    userEmailSpan.textContent = '';
+                    logoutButton.classList.add('hidden');
+                    newBotButton.disabled = true;
+
+                    botList.innerHTML = '<p class="text-gray-400 text-sm">Please log in to view bots.</p>';
+                }
             }
 
-            if (isLoggedIn) {
-                loginButton.classList.add('hidden');
-                userInfoSection.classList.remove('hidden');
-                userEmailSpan.textContent = user.email;
-                newBotButton.disabled = false;
-                if (!isPublicView) {
-                    fetchBots();
-                }
-            } else {
-                loginButton.classList.remove('hidden');
-                userInfoSection.classList.add('hidden');
-                userEmailSpan.textContent = '';
-                newBotButton.disabled = true;
-
-                botList.innerHTML = '<p class="text-gray-400 text-sm">Please log in to view bots.</p>';
+            if (!currentBotId && !isPublicView) {
                 sessionsSection.classList.add('hidden');
-                chatInput.disabled = true;
-                sendButton.disabled = true;
-                systemInstructions.disabled = true;
-                saveInstructionsButton.disabled = true;
-
+                disableChat();
                 clearChatOutput();
-                initialChatMessage.textContent = 'Please log in or visit a public bot link to start a new conversation.';
+                initialChatMessage.textContent = 'Please log in or select a bot to start a new conversation.';
+            } else if (isPublicView && !currentBotId) {
+                initialChatMessage.textContent = 'Loading bot...';
             }
         }
         
@@ -302,9 +306,10 @@
                 const response = await fetch('/user_info');
                 const user = await response.json();
                 updateUI(user);
+                return user;
             } catch (error) {
                 console.error('Error checking login status:', error);
-                updateUI({ logged_in: false, is_public_view: false });
+                return { logged_in: false, is_public_view: false };
             }
         }
 
@@ -380,7 +385,7 @@
                         'transition', 'duration-200', 'text-sm', 'break-all', 'mr-2'
                     );
                     botButton.innerHTML = `
-                        ${bot.name}
+                        ${bot.name} (${bot.session_count})
                         <div class="text-xs text-gray-400 mt-1">ID: ${bot.id}</div>
                     `;
                     botButton.dataset.botId = bot.id;
@@ -666,16 +671,29 @@
         }
 
         function enableChat() {
-            chatInput.disabled = !isLoggedIn && botPermissions !== 'anyone';
-            sendButton.disabled = !isLoggedIn && botPermissions !== 'anyone';
-            newSessionButton.disabled = !isBotOwner;
-            systemInstructions.disabled = !isBotOwner;
-            saveInstructionsButton.disabled = !isBotOwner;
+            chatInput.disabled = false;
+            sendButton.disabled = false;
+            
+            const isPublicView = document.getElementById('admin-sidebar').classList.contains('hidden');
+
+            // In public view, chat is always enabled but session management is not.
+            if (isPublicView) {
+                newSessionButton.disabled = false; // Public users can always create a new session
+                systemInstructions.disabled = true;
+                saveInstructionsButton.disabled = true;
+            } else {
+                newSessionButton.disabled = !isBotOwner;
+                systemInstructions.disabled = !isBotOwner;
+                saveInstructionsButton.disabled = !isBotOwner;
+            }
         }
 
         async function fetchSessions(sessions) {
             sessionHistoryList.innerHTML = '';
-            document.querySelectorAll('#sessions-section button').forEach(btn => btn.disabled = !isBotOwner);
+            const isPublicView = document.getElementById('admin-sidebar').classList.contains('hidden');
+            if (!isPublicView) {
+                document.querySelectorAll('#sessions-section button').forEach(btn => btn.disabled = !isBotOwner);
+            }
 
             if (sessions.length === 0) {
                 sessionHistoryList.innerHTML = '<p class="text-gray-400 text-sm">No sessions found.</p>';
@@ -736,41 +754,37 @@
         async function createNewSession() {
             if (!currentBotId) return;
 
-            const isPublicView = document.getElementById('admin-sidebar').classList.contains('hidden');
+            try {
+                const response = await fetch(`/bots/${currentBotId}/sessions/new`, { method: 'POST' });
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error);
+                }
+                const result = await response.json();
 
-            // If it's a public view, a new session is always created.
-            if (isPublicView) {
-                try {
-                    const response = await fetch(`/bots/${currentBotId}/sessions/new`, { method: 'POST' });
-                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                    const result = await response.json();
+                const isPublicView = document.getElementById('admin-sidebar').classList.contains('hidden');
+                if (isPublicView) {
                     sessionStorage.setItem('publicSessionId', result.sessionId);
                     await loadSession(currentBotId, result.sessionId);
-                } catch (error) {
-                    console.error('Error creating new session for public user:', error);
-                    alert('Failed to create a new session. Please try again.');
-                }
-            } else {
-                // If it's an admin view, only the owner can create sessions
-                if (!isBotOwner) return;
-                try {
-                    const response = await fetch(`/bots/${currentBotId}/sessions/new`, { method: 'POST' });
-                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                    const result = await response.json();
-                    await fetchBots();
-                    await selectBot(currentBotId);
+                } else {
+                    sessionStorage.setItem('activeSessionId', result.sessionId);
+                    // Instead of full reload, just update the session list
+                    const res = await fetch(`/bots/${currentBotId}`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        await fetchSessions(data.sessions);
+                    }
                     await loadSession(currentBotId, result.sessionId);
-                } catch (error) {
-                    console.error('Error creating new session:', error);
-                    alert('Failed to create a new session.');
                 }
+            } catch (error) {
+                console.error('Error creating new session:', error);
+                alert('Failed to create a new session: ' + error.message);
             }
         }
 
         async function loadSession(botId, sessionId) {
             currentBotId = botId;
             currentSessionId = sessionId;
-            sessionStorage.setItem('activeBotId', currentBotId);
             
             const isPublicView = document.getElementById('admin-sidebar').classList.contains('hidden');
             if (isPublicView) {
@@ -841,7 +855,11 @@
                 if (sessionIdToDelete === currentSessionId) {
                     await createNewSession();
                 } else {
-                    await selectBot(currentBotId);
+                    const res = await fetch(`/bots/${currentBotId}`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        await fetchSessions(data.sessions);
+                    }
                 }
             } catch (error) {
                 console.error('Error deleting session:', error);
@@ -851,7 +869,7 @@
 
         function showRenameSessionModal(sessionId, currentName) {
             sessionIdToRename = sessionId;
-            renameSessionInput.value = currentName === 'Untitled Session' ? '' : currentName;
+            renameSessionInput.value = currentName.startsWith('20') ? '' : currentName;
             renameSessionModal.classList.remove('hidden');
             renameSessionInput.focus();
         }
@@ -876,10 +894,18 @@
 
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 hideRenameSessionModal();
-                await selectBot(currentBotId);
-                if (sessionIdToRename === currentSessionId) {
-                    await loadSession(currentBotId, currentSessionId);
+                
+                // Update the session list without a full reload
+                const res = await fetch(`/bots/${currentBotId}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    await fetchSessions(data.sessions);
+                    if (sessionIdToRename === currentSessionId) {
+                         // Re-load the session to ensure all data is consistent
+                        await loadSession(currentBotId, currentSessionId);
+                    }
                 }
+
             } catch (error) {
                 console.error('Error renaming session:', error);
                 alert('Failed to rename session. Check console for details.');
@@ -908,7 +934,6 @@
                         botId: currentBotId,
                         sessionId: currentSessionId,
                         message: userMessage,
-                        sessionName: currentSessionName
                     }),
                 });
 
@@ -920,9 +945,17 @@
                 const data = await response.json();
                 loadingIndicator.textContent = data.response;
                 chatOutput.scrollTop = chatOutput.scrollHeight;
-                if (!currentSessionName) {
-                    await selectBot(currentBotId);
+                
+                // Refresh sessions to update the name
+                const isPublicView = document.getElementById('admin-sidebar').classList.contains('hidden');
+                if (!isPublicView) {
+                    const res = await fetch(`/bots/${currentBotId}`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        await fetchSessions(data.sessions);
+                    }
                 }
+                
             } catch (error) {
                 console.error('Error:', error);
                 loadingIndicator.textContent = `Sorry, an error occurred: ${error.message}`;
@@ -1011,24 +1044,32 @@
             const pathSegments = window.location.pathname.split('/').filter(Boolean);
             const isBotLink = pathSegments.length === 2 && pathSegments[0] === 'bot';
 
-            await checkLoginStatus();
+            const user = await checkLoginStatus();
 
             if (isBotLink) {
                 const botIdFromUrl = pathSegments[1];
-                await selectBot(botIdFromUrl);
-
-                // Create a new session for every load through /bot/bot_id
-                const response = await fetch(`/bots/${botIdFromUrl}/sessions/new`, { method: 'POST' });
-                if (response.ok) {
-                    const result = await response.json();
-                    sessionStorage.setItem('publicSessionId', result.sessionId);
-                    await loadSession(botIdFromUrl, result.sessionId);
-                } else {
-                    const error = await response.json();
-                    console.error('Error creating new session for public user:', error);
-                    initialChatMessage.textContent = `Error: ${error.error}`;
+                currentBotId = botIdFromUrl;
+                
+                try {
+                    const response = await fetch(`/bots/${botIdFromUrl}`);
+                    if (!response.ok) {
+                        throw new Error("Access denied or bot not found.");
+                    }
+                    
+                    const storedSessionId = sessionStorage.getItem('publicSessionId');
+                    if (storedSessionId) {
+                        await loadSession(botIdFromUrl, storedSessionId);
+                    } else {
+                        await createNewSession();
+                    }
+                } catch (error) {
+                    console.error('Error accessing bot:', error);
+                    clearChatOutput();
+                    initialChatMessage.textContent = `Error: ${error.message}`;
+                    disableChat();
                 }
-            } else if (isLoggedIn) {
+
+            } else if (user.logged_in) {
                 const storedBotId = sessionStorage.getItem('activeBotId');
                 if (storedBotId) {
                     await selectBot(storedBotId);

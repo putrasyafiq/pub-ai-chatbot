@@ -48,22 +48,22 @@ def get_current_month_year() -> str:
     return datetime.now().strftime("%Y-%m")
 
 def get_user_data_dir() -> str | None:
-    """Returns the user-specific directory path based on the logged-in user's email."""
-    if 'email' not in session:
+    """Returns the user-specific directory path based on the logged-in user's ID."""
+    if 'google_id' not in session:
         return None
     
-    user_email_hash = str(hash(session['email']))
-    user_dir = os.path.join(USERS_DATA_DIR, user_email_hash)
+    user_id = session.get('google_id')
+    user_dir = os.path.join(USERS_DATA_DIR, user_id)
     os.makedirs(user_dir, exist_ok=True)
     return user_dir
 
 def get_user_info_path() -> str | None:
     """Returns the file path for the user's info file."""
-    if 'email' not in session:
+    if 'google_id' not in session:
         return None
     users_info_dir = os.path.join(USERS_DATA_DIR, "users_info")
     os.makedirs(users_info_dir, exist_ok=True)
-    user_info_file = os.path.join(users_info_dir, f"{str(hash(session['email']))}.json")
+    user_info_file = os.path.join(users_info_dir, f"{session.get('google_id')}.json")
     return user_info_file
 
 def get_bots_dir() -> str | None:
@@ -318,6 +318,7 @@ def chat_with_vertex():
         if not bot_id or not session_id or not user_message:
             return jsonify({'error': 'Missing botId, sessionId, or message'}), 400
 
+        # Check bot permissions before processing
         has_access, message = check_bot_access(bot_id)
         if not has_access:
             return jsonify({'error': message}), 403
@@ -500,7 +501,7 @@ def get_bot(bot_id):
                     all_sessions.append(session_data)
 
             # Sort sessions by last_message_time in descending order
-            all_sessions.sort(key=lambda x: x.get('last_message_time', ''), reverse=True)
+            all_sessions.sort(key=lambda x: x.get('last_message_time') or '', reverse=True)
 
             for session_data in all_sessions:
                 total_tokens = session_data.get('total_tokens', 0)
@@ -562,16 +563,10 @@ def update_bot_permissions(bot_id):
 @app.route('/bots/<bot_id>/sessions/new', methods=['POST'])
 def create_session(bot_id):
     user_email = session.get('email', 'Public')
-    is_owner = 'email' in session and load_bot_info(bot_id) and load_bot_info(bot_id).get('owner_email') == session.get('email')
-
-    if not is_owner and user_email == 'Public':
-        bot_info = load_bot_info(bot_id)
-        if not bot_info:
-            return jsonify({'error': 'Bot not found'}), 404
-        if bot_info['permissions'] == 'restricted':
-            return jsonify({'error': 'Restricted bot. Sessions cannot be created anonymously.'}), 403
-        if bot_info['permissions'] == 'domain':
-            return jsonify({'error': 'Login required for this bot.'}), 401
+    
+    has_access, message = check_bot_access(bot_id)
+    if not has_access:
+        return jsonify({'error': message}), 403
 
     try:
         session_id = os.urandom(8).hex()
