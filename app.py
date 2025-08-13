@@ -498,23 +498,19 @@ def get_bot(bot_id):
                 if f.endswith('.json'):
                     session_id = os.path.splitext(f)[0]
                     session_data = load_session_data(bot_id, session_id)
-                    all_sessions.append(session_data)
+                    all_sessions.append({
+                        'id': session_id,
+                        'name': session_data.get('name', 'Untitled Session'),
+                        'last_message_time': session_data.get('last_message_time') 
+                    })
 
             # Sort sessions by last_message_time in descending order
             all_sessions.sort(key=lambda x: x.get('last_message_time') or '', reverse=True)
 
-            for session_data in all_sessions:
-                total_tokens = session_data.get('total_tokens', 0)
-                last_message_time = session_data.get('last_message_time')
-                
-                total_bot_tokens += total_tokens
-                if last_message_time:
-                    month_year = datetime.fromisoformat(last_message_time).strftime("%Y-%m")
-                    monthly_bot_tokens[month_year] = monthly_bot_tokens.get(month_year, 0) + total_tokens
-                
+            for session_data_item in all_sessions: # Correctly iterate over all_sessions
                 session_list.append({
-                    'id': session_id,
-                    'name': session_data.get('name', 'Untitled Session')
+                    'id': session_data_item['id'], # Use the correct ID from the session_data_item
+                    'name': session_data_item['name']
                 })
         
         # Only return sensitive data like owner_email to the owner

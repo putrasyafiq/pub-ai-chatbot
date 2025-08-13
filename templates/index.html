@@ -203,7 +203,7 @@
         const sendButton = document.getElementById('send-button');
         const chatOutput = document.getElementById('chat-output');
         const systemInstructions = document.getElementById('system-instructions');
-        const saveInstructionsButton = document.getElementById('save-instructions-button');
+        const saveInstructionsButton = document = document.getElementById('save-instructions-button');
         const botList = document.getElementById('bot-list');
         const newBotButton = document.getElementById('new-bot-button');
         const sessionHistoryList = document.getElementById('session-history-list');
@@ -390,6 +390,7 @@
                     `;
                     botButton.dataset.botId = bot.id;
 
+                    // Corrected: Changed 'button' to 'botButton'
                     if (bot.id === currentBotId) {
                         botButton.classList.add('bg-blue-700', 'text-white');
                         botButton.classList.remove('bg-gray-700', 'hover:bg-gray-600', 'text-gray-200');
@@ -712,6 +713,7 @@
                 button.textContent = session.name || session.id;
                 button.dataset.sessionId = session.id;
 
+                // Highlight the currently active session
                 if (session.id === currentSessionId) {
                     button.classList.add('bg-blue-700', 'text-white');
                     button.classList.remove('bg-gray-700', 'hover:bg-gray-600', 'text-gray-200');
@@ -793,15 +795,12 @@
                 sessionStorage.setItem('activeSessionId', currentSessionId);
             }
 
-            document.querySelectorAll('#session-history-list button').forEach(button => {
-                if (button.dataset.sessionId === currentSessionId) {
-                    button.classList.add('bg-blue-700', 'text-white');
-                    button.classList.remove('bg-gray-700', 'hover:bg-gray-600', 'text-gray-200');
-                } else {
-                    button.classList.add('bg-gray-700', 'hover:bg-gray-600', 'text-gray-200');
-                    button.classList.remove('bg-blue-700', 'text-white');
-                }
-            });
+            // Re-fetch and re-render sessions to ensure the correct one is highlighted
+            const res = await fetch(`/bots/${currentBotId}`);
+            if (res.ok) {
+                const data = await res.json();
+                await fetchSessions(data.sessions);
+            }
 
             clearChatOutput();
             appendMessage('bot', `Loading session: ${sessionId.substring(0, 8)}...`);
